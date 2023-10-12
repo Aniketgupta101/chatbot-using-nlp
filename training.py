@@ -3,14 +3,22 @@ import json
 import pickle
 import numpy as np
 import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.layers import Dense, Dropout
 import nltk
 from nltk.stem import WordNetLemmatizer
+
 nltk.download('punkt')
 nltk.download('wordnet')
+
 lemmatizer = WordNetLemmatizer()
 
+# Load intents
 intents = json.loads(open('intents.json').read())
 
+# Tokenize and preprocess the data
 words = []
 classes = []
 documents = []
@@ -26,42 +34,58 @@ for intent in intents['intents']:
 
 words = [lemmatizer.lemmatize(word) for word in words if word not in ignoreLetters]
 words = sorted(set(words))
-
 classes = sorted(set(classes))
 
-pickle.dump(words, open('words.pkl', 'wb'))
-pickle.dump(classes, open('classes.pkl', 'wb'))
+# Tokenize using TensorFlow's Tokenizer
+tokenizer = Tokenizer()
+tokenizer.fit_on_texts(words)
+words = tokenizer.word_index
+num_words = len(words) + 1
 
-training = []
-outputEmpty = [0] * len(classes)
+# Prepare training data
+X = []
+Y = []
 
-for document in documents:
-    bag = []
-    wordPatterns = document[0]
-    wordPatterns = [lemmatizer.lemmatize(word.lower()) for word in wordPatterns]
-    for word in words:
-        bag.append(1) if word in wordPatterns else bag.append(0)
+max_sequence_length = 170  # Set the maximum sequence length
 
-    outputRow = list(outputEmpty)
-    outputRow[classes.index(document[1])] = 1
-    training.append(bag + outputRow)
+for doc in documents:
+    pattern_words = doc[0]
+    pattern_words = [lemmatizer.lemmatize(word.lower()) for word in pattern_words]
+    sequence = tokenizer.texts_to_sequences([pattern_words])[0]
 
-random.shuffle(training)
-training = np.array(training)
+    # Create bag of words
+    bag = [1 if i in sequence else 0 for i in range(1, num_words)]
 
-trainX = training[:, :len(words)]
-trainY = training[:, len(words):]
+    # Pad the bag of words to match the expected input shape
+    bag = pad_sequences([bag], maxlen=max_sequence_length, padding='post')[0]
 
-model = tf.keras.Sequential()
-model.add(tf.keras.layers.Dense(128, input_shape=(len(trainX[0]),), activation = 'relu'))
-model.add(tf.keras.layers.Dropout(0.5))
-model.add(tf.keras.layers.Dense(64, activation = 'relu'))
-model.add(tf.keras.layers.Dropout(0.5))
-model.add(tf.keras.layers.Dense(len(trainY[0]), activation='softmax'))
+    output_row = [0] * len(classes)
+    output_row[classes.index(doc[1])] = 1
+    X.append(bag)
+    Y.append(output_row)
 
+X = np.array(X)
+Y = np.array(Y)
+
+# Split data into train and test sets
+X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
+
+# Build the model
+model = tf.keras.Sequential([
+    Dense(128, input_shape=(max_sequence_length,), activation='relu'),
+    Dropout(0.5),
+    Dense(64, activation='relu'),
+    Dropout(0.5),
+    Dense(len(classes), activation='softmax')
+])
+
+# Compile the model
 sgd = tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9, nesterov=True)
 model.compile(loss='categorical_crossentropy', optimizer=sgd, metrics=['accuracy'])
 
-model.fit(trainX, trainY, epochs=200, batch_size=5, verbose=1)
+# Train the model
+model.fit(X_train, Y_train, epochs=200, batch_size=32, verbose=1, validation_data=(X_test, Y_test))
+
+# Save the model
 model.save('chatbot_model.h5')
 print('Done')
